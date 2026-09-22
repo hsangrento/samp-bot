@@ -1,0 +1,9 @@
+/build/
+*.exp
+*.lib
+*.obj
+*.ilk
+*.pdb
+*.amx
+*.dll
+!.github/test/citest.amx

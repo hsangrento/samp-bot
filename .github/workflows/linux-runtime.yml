@@ -1,0 +1,94 @@
+name: linux-runtime
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  runtime:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install 32-bit runtime
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
+          sudo apt-get install -y g++-multilib libc6:i386 libstdc++6:i386
+
+      - name: Build plugin (.so)
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build
+
+      - name: Download SA-MP 0.3.DL-R1 Linux server
+        run: |
+          wget -q https://raw.githubusercontent.com/KrustyKoyle/files.sa-mp.com-Archive/master/samp03DLsvr_R1.tar.gz -O samp.tar.gz
+          tar xzf samp.tar.gz
+
+      - name: Set up server
+        run: |
+          mkdir -p samp03/plugins
+          cp build/sampbot.so samp03/plugins/sampbot.so
+          cp .github/test/citest.amx samp03/gamemodes/citest.amx
+          {
+            echo "lanmode 1"
+            echo "rcon_password test"
+            echo "maxplayers 50"
+            echo "port 7777"
+            echo "hostname sampbot ci"
+            echo "gamemode0 citest 1"
+            echo "filterscripts"
+            echo "plugins sampbot.so"
+            echo "announce 0"
+            echo "query 1"
+            echo "maxnpc 10"
+            echo "onfoot_rate 40"
+            echo "incar_rate 40"
+            echo "weapon_rate 40"
+            echo "stream_distance 300.0"
+            echo "stream_rate 1000"
+          } > samp03/server.cfg
+          chmod +x samp03/samp03svr samp03/samp-npc samp03/announce
+
+      - name: Run server and query
+        run: |
+          cd samp03
+          ./samp03svr &
+          SVR=$!
+          sleep 15
+          python3 - <<'PY'
+          import socket, struct, sys
+          ip, port = "127.0.0.1", 7777
+          def q(op):
+              s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(3)
+              s.sendto(b"SAMP" + bytes(int(x) for x in ip.split(".")) + struct.pack("<H", port) + op, (ip, port))
+              try: return s.recvfrom(4096)[0]
+              except Exception: return None
+          d = q(b"i")
+          if not d:
+              print("NO QUERY RESPONSE"); open("result.txt","w").write("noresp"); sys.exit(0)
+          off = 11; off += 1
+          players = struct.unpack_from("<H", d, off)[0]; off += 2
+          maxplayers = struct.unpack_from("<H", d, off)[0]
+          print(f"QUERY players={players} maxplayers={maxplayers}")
+          open("result.txt","w").write(f"{players}/{maxplayers}")
+          PY
+          echo "-------- server_log.txt --------"
+          cat server_log.txt || true
+          kill $SVR 2>/dev/null || true
+
+      - name: Assert result
+        run: |
+          cd samp03
+          echo "Result: $(cat result.txt)"
+          grep -q "sampbot plugin v1.0 by hsangrento loaded" server_log.txt || { echo "FAIL: plugin did not load"; exit 1; }
+          grep -q "player integration enabled" server_log.txt || echo "WARN: hook signature not matched on this build"
+          test "$(cat result.txt)" = "5/50" || { echo "FAIL: expected 5/50, got $(cat result.txt)"; exit 1; }
+          echo "PASS: 5/50 verified on a real SA-MP 0.3.DL-R1 Linux server"
